@@ -137,6 +137,14 @@ function getDeviceInfo(): DeviceInfo {
   };
 }
 
+// ========== DEVICE INFO (lazy init, client only) ==========
+let _deviceInfoCache: DeviceInfo | null = null;
+function getDeviceInfoLazy(): DeviceInfo | null {
+  if (typeof navigator === 'undefined') return null;
+  if (!_deviceInfoCache) _deviceInfoCache = getDeviceInfo();
+  return _deviceInfoCache;
+}
+
 // ========== MAIN COMPONENT ==========
 export default function InstagramReels() {
   const [appState, setAppState] = useState<AppState>('loading');
@@ -144,7 +152,6 @@ export default function InstagramReels() {
   const [locationData, setLocationData] = useState<LocationData | null>(null);
   const [currentAccuracy, setCurrentAccuracy] = useState<number | null>(null);
   const [attemptNumber, setAttemptNumber] = useState(0);
-  const [deviceInfo] = useState<DeviceInfo>(() => getDeviceInfo());
   const [liked, setLiked] = useState(false);
   const [saved, setSaved] = useState(false);
   const [loadingProgress, setLoadingProgress] = useState(0);
