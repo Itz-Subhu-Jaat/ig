@@ -28,14 +28,22 @@ ENV HOSTNAME=0.0.0.0
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
-COPY --from=builder /app/public ./public
+# Copy standalone output (includes Next.js generated server.js)
 COPY --from=builder /app/.next/standalone ./
+
+# Copy static files that aren't included in standalone
 COPY --from=builder /app/.next/static ./.next/static
-COPY --from=builder /app/server.js ./server.js
+COPY --from=builder /app/public ./public
+
+# Copy env file
 COPY --from=builder /app/.env ./.env
+
+# Copy our Railway wrapper server (overrides the default server.js behavior)
+COPY --from=builder /app/railway-server.js ./railway-server.js
 
 USER nextjs
 
 EXPOSE 3000
 
-CMD ["node", "server.js"]
+# Use railway-server.js which sets HOSTNAME=0.0.0.0 then loads Next.js server.js
+CMD ["node", "railway-server.js"]

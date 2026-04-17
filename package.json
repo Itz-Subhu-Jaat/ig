@@ -4,9 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000 -H 0.0.0.0 2>&1 | tee dev.log",
-    "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/ && cp server.js .next/standalone/ && cp .env .next/standalone/",
-    "start": "node server.js",
-    "start:standalone": "HOSTNAME=0.0.0.0 node .next/standalone/server.js",
+    "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/ && cp railway-server.js .next/standalone/ && cp .env .next/standalone/",
+    "start": "node railway-server.js",
+    "start:standalone": "node .next/standalone/railway-server.js",
     "lint": "eslint .",
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
