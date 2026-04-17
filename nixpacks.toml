@@ -1,7 +1,5 @@
-[phases.setup]
-
 [phases.build]
-cmd = "npm run build"
+cmds = ["npm run build"]
 
 [start]
-cmd = "node server.js"
+cmd = "next start -H 0.0.0.0 -p ${PORT:-3000}"

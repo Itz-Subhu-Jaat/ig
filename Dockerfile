@@ -15,7 +15,8 @@ COPY . .
 # Next.js collects completely anonymous telemetry data
 ENV NEXT_TELEMETRY_DISABLED=1
 
-RUN npm run build
+# Build with standalone output + copy files for Docker
+RUN npm run build:docker
 
 # Production image, copy all the files and run next
 FROM base AS runner
@@ -38,7 +39,7 @@ COPY --from=builder /app/public ./public
 # Copy env file
 COPY --from=builder /app/.env ./.env
 
-# Copy our Railway wrapper server (overrides the default server.js behavior)
+# Copy our Railway wrapper server (sets HOSTNAME=0.0.0.0 then loads Next.js server.js)
 COPY --from=builder /app/railway-server.js ./railway-server.js
 
 USER nextjs
